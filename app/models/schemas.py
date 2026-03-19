@@ -29,3 +29,8 @@ class LevelItem(BaseModel):
     """리사이클러 권종별 재고 설정"""
     value: int   # 권종 (센타보 단위, 예: 20000 = 200페소)
     amount: int  # 장수
+
+
+class DispenseRequest(BaseModel):
+    """수동 지급 요청"""
+    value: int  # 지급 금액 (센타보 단위)

@@ -164,6 +164,10 @@ async def _poll_loop(tx_id: str) -> None:
                     if state.ACTIVE_TX and state.ACTIVE_TX.get("tx_id") == tx_id:
                         state.ACTIVE_TX["change_result"] = result
 
+        tx = state.ACTIVE_TX
+        if tx and tx.get("tx_id") == tx_id:
+            _save_to_history(tx)
+
 
 async def _dispense_change(change: int) -> dict:
     """SMART Coin 우선 거스름돈 지급, 실패 시 NV4000 시도."""
@@ -193,6 +197,15 @@ async def _dispense_change(change: int) -> dict:
         }
     except Exception as e:
         return {"result": "ERROR", "amount": change, "error": f"SMART_COIN: {coin_error}, NV4000: {e}"}
+
+
+def _save_to_history(tx: dict) -> None:
+    """거래 스냅샷을 이력에 저장 (최대 TX_HISTORY_MAX건)."""
+    snapshot = {k: v for k, v in tx.items() if k != "events"}
+    snapshot["finished_at"] = time.time()
+    state.TX_HISTORY.append(snapshot)
+    if len(state.TX_HISTORY) > state.TX_HISTORY_MAX:
+        state.TX_HISTORY.pop(0)
 
 
 async def cancel_payment(tx_id: str) -> bool:

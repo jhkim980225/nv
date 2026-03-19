@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from app import config
 from app.models import state
-from app.models.schemas import LevelItem
+from app.models.schemas import LevelItem, DispenseRequest
 from app.services import itl_client
 
 router = APIRouter(prefix="/device", tags=["장치"])
@@ -229,3 +229,83 @@ async def nv4000_get_levels() -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="NV4000이 연결되지 않았습니다")
     levels = await itl_client.get_all_levels(state.NV_DEVICE_ID)
     return {"device_id": state.NV_DEVICE_ID, "levels": levels}
+
+
+# ── SMART Coin 재고 ───────────────────────────────────────
+
+@router.get("/coin/levels")
+async def coin_get_levels() -> dict[str, Any]:
+    """SMART Coin 권종별 재고 조회."""
+    if not state.COIN_DEVICE_ID:
+        raise HTTPException(status_code=409, detail="SMART Coin이 연결되지 않았습니다")
+    levels = await itl_client.get_all_levels(state.COIN_DEVICE_ID)
+    return {"device_id": state.COIN_DEVICE_ID, "levels": levels}
+
+
+# ── 수동 지급 ─────────────────────────────────────────────
+
+@router.post("/coin/dispense")
+async def coin_dispense(req: DispenseRequest) -> dict[str, Any]:
+    """SMART Coin 수동 지급 (유지보수/테스트용)."""
+    if not state.COIN_DEVICE_ID:
+        raise HTTPException(status_code=409, detail="SMART Coin이 연결되지 않았습니다")
+    try:
+        await itl_client.enable_payout(state.COIN_DEVICE_ID)
+    except Exception:
+        pass  # enable_payout 실패해도 dispense 시도
+    result = await itl_client.dispense_value(state.COIN_DEVICE_ID, req.value, config.COIN_CURRENCY)
+    return {"device": "SMART_COIN", "value": req.value, "result": result}
+
+
+@router.post("/nv4000/dispense")
+async def nv4000_dispense(req: DispenseRequest) -> dict[str, Any]:
+    """NV4000 수동 지급 (유지보수/테스트용)."""
+    if not state.NV_DEVICE_ID:
+        raise HTTPException(status_code=409, detail="NV4000이 연결되지 않았습니다")
+    await itl_client.enable_payout(state.NV_DEVICE_ID)
+    result = await itl_client.dispense_value(state.NV_DEVICE_ID, req.value, config.NV4000_CURRENCY)
+    return {"device": "NV4000", "value": req.value, "result": result}
+
+
+# ── 장치 모니터링 ─────────────────────────────────────────
+
+_ERROR_EVENTS = {"JAMMED", "ERROR", "FRAUD_ATTEMPT", "STACKER_FULL", "UNSAFE_JAM"}
+
+
+async def _parse_device_status(device_id: str, name: str) -> dict[str, Any]:
+    if not device_id:
+        return {"device": name, "connected": False, "has_error": False}
+    try:
+        events = await itl_client.get_device_status(device_id)
+        device_state = None
+        errors = []
+        for ev in events:
+            if ev.get("type") == "DeviceStatusResponse":
+                device_state = ev.get("stateAsString")
+            et = ev.get("eventTypeAsString", "")
+            if et in _ERROR_EVENTS:
+                errors.append(et)
+        return {
+            "device": name,
+            "connected": True,
+            "state": device_state,
+            "has_error": bool(errors),
+            "errors": errors,
+            "raw": events,
+        }
+    except Exception as e:
+        return {"device": name, "connected": True, "state": "UNKNOWN", "has_error": True, "errors": [str(e)], "raw": []}
+
+
+@router.get("/monitor")
+async def device_monitor() -> dict[str, Any]:
+    """두 장치 실시간 상태 조회 — JAMMED/ERROR 감지."""
+    nv_status, coin_status = await asyncio.gather(
+        _parse_device_status(state.NV_DEVICE_ID, "NV4000"),
+        _parse_device_status(state.COIN_DEVICE_ID, "SMART_COIN"),
+    )
+    return {
+        "nv4000": nv_status,
+        "smart_coin": coin_status,
+        "any_error": nv_status.get("has_error") or coin_status.get("has_error"),
+    }

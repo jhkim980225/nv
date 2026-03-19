@@ -127,3 +127,110 @@ async def test_both_connect_success(client: AsyncClient):
     data = resp.json()
     assert data["nv4000"]["ok"] is True
     assert data["smart_coin"]["ok"] is True
+
+
+# ── 동전 재고 ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_coin_get_levels_not_connected(client: AsyncClient):
+    """/device/coin/levels GET — 미연결 시 409."""
+    resp = await client.get("/device/coin/levels")
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_coin_get_levels_success(client: AsyncClient):
+    """/device/coin/levels GET — 연결 후 재고 반환."""
+    state.COIN_DEVICE_ID = "SMART_COIN_SYSTEM-COM3"
+    mock_levels = [{"value": 100, "amount": 10}, {"value": 500, "amount": 5}]
+    with patch("app.services.itl_client.get_all_levels", new=AsyncMock(return_value=mock_levels)):
+        resp = await client.get("/device/coin/levels")
+    assert resp.status_code == 200
+    assert resp.json()["levels"] == mock_levels
+
+
+# ── 수동 지급 ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_coin_dispense_not_connected(client: AsyncClient):
+    """/device/coin/dispense — 미연결 시 409."""
+    resp = await client.post("/device/coin/dispense", json={"value": 3000})
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_coin_dispense_success(client: AsyncClient):
+    """/device/coin/dispense — 연결 후 지급 성공."""
+    state.COIN_DEVICE_ID = "SMART_COIN_SYSTEM-COM3"
+    mock_result = {"dispenseResult": "COMPLETED"}
+    with (
+        patch("app.services.itl_client.enable_payout", new=AsyncMock()),
+        patch("app.services.itl_client.dispense_value", new=AsyncMock(return_value=mock_result)),
+    ):
+        resp = await client.post("/device/coin/dispense", json={"value": 3000})
+    assert resp.status_code == 200
+    assert resp.json()["result"]["dispenseResult"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_nv4000_dispense_not_connected(client: AsyncClient):
+    """/device/nv4000/dispense — 미연결 시 409."""
+    resp = await client.post("/device/nv4000/dispense", json={"value": 10000})
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_nv4000_dispense_success(client: AsyncClient):
+    """/device/nv4000/dispense — 연결 후 지급 성공."""
+    state.NV_DEVICE_ID = "NV4000-COM4"
+    mock_result = {"dispenseResult": "COMPLETED"}
+    with (
+        patch("app.services.itl_client.enable_payout", new=AsyncMock()),
+        patch("app.services.itl_client.dispense_value", new=AsyncMock(return_value=mock_result)),
+    ):
+        resp = await client.post("/device/nv4000/dispense", json={"value": 10000})
+    assert resp.status_code == 200
+    assert resp.json()["result"]["dispenseResult"] == "COMPLETED"
+
+
+# ── 장치 모니터링 ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_device_monitor_no_devices(client: AsyncClient):
+    """/device/monitor — 미연결 시 connected=False."""
+    resp = await client.get("/device/monitor")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["nv4000"]["connected"] is False
+    assert data["smart_coin"]["connected"] is False
+    assert data["any_error"] is False
+
+
+@pytest.mark.asyncio
+async def test_device_monitor_idle(client: AsyncClient):
+    """/device/monitor — IDLE 상태."""
+    state.NV_DEVICE_ID = "NV4000-COM4"
+    state.COIN_DEVICE_ID = "SMART_COIN_SYSTEM-COM3"
+    mock_events = [{"type": "DeviceStatusResponse", "stateAsString": "IDLE"}]
+    with patch("app.services.itl_client.get_device_status", new=AsyncMock(return_value=mock_events)):
+        resp = await client.get("/device/monitor")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["nv4000"]["state"] == "IDLE"
+    assert data["nv4000"]["has_error"] is False
+
+
+@pytest.mark.asyncio
+async def test_device_monitor_jammed(client: AsyncClient):
+    """/device/monitor — JAMMED 감지."""
+    state.NV_DEVICE_ID = "NV4000-COM4"
+    state.COIN_DEVICE_ID = "SMART_COIN_SYSTEM-COM3"
+    mock_nv = [{"type": "DeviceStatusResponse", "stateAsString": "JAMMED", "eventTypeAsString": "JAMMED"}]
+    mock_coin = [{"type": "DeviceStatusResponse", "stateAsString": "IDLE"}]
+    with patch("app.services.itl_client.get_device_status", side_effect=[mock_nv, mock_coin]):
+        resp = await client.get("/device/monitor")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["nv4000"]["has_error"] is True
+    assert "JAMMED" in data["nv4000"]["errors"]
+    assert data["any_error"] is True

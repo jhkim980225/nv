@@ -7,7 +7,7 @@ from app.models import state
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
+async def reset_state():
     """각 테스트 전후 전역 상태 초기화."""
     state.HTTP = httpx.AsyncClient(timeout=5.0)
     state.AUTH_HEADER = None
@@ -15,9 +15,9 @@ def reset_state():
     state.COIN_DEVICE_ID = None
     state.ACTIVE_TX = None
     state.ACTIVE_TX_TASK = None
+    state.TX_HISTORY = []
     yield
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(state.HTTP.aclose())
+    await state.HTTP.aclose()
     state.HTTP = None
 
 

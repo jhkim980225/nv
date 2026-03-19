@@ -130,3 +130,62 @@ async def test_payment_start_success(client: AsyncClient):
     data = resp.json()
     assert "tx_id" in data
     assert data["target_amount"] == 10000
+
+
+# ── 거래 이력 ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_payment_history_empty(client: AsyncClient):
+    """/payment/history — 이력 없을 때 빈 배열."""
+    resp = await client.get("/payment/history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 0
+    assert data["history"] == []
+
+
+@pytest.mark.asyncio
+async def test_payment_history_with_data(client: AsyncClient):
+    """/payment/history — 이력 있을 때 최신순 반환."""
+    import time
+    state.TX_HISTORY = [
+        {"tx_id": "old", "status": "COMPLETE", "finished_at": time.time() - 60,
+         "target_amount": 5000, "bill_amount": 5000, "coin_amount": 0, "change_amount": 0},
+        {"tx_id": "new", "status": "CANCELLED", "finished_at": time.time(),
+         "target_amount": 10000, "bill_amount": 0, "coin_amount": 0, "change_amount": 0},
+    ]
+    resp = await client.get("/payment/history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 2
+    assert data["history"][0]["tx_id"] == "new"  # 최신순
+
+
+# ── SSE 스트림 ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_payment_stream_not_found(client: AsyncClient):
+    """/payment/stream/{tx_id} — 없는 거래 시 error 반환."""
+    resp = await client.get("/payment/stream/nonexistent")
+    assert resp.status_code == 200
+    assert "error" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_payment_stream_completed_from_history(client: AsyncClient):
+    """/payment/stream/{tx_id} — 이력에서 완료 거래 조회."""
+    import time
+    state.TX_HISTORY = [{
+        "tx_id": "done_tx",
+        "status": "COMPLETE",
+        "target_amount": 10000,
+        "bill_amount": 10000,
+        "coin_amount": 0,
+        "change_amount": 0,
+        "change_result": None,
+        "finished_at": time.time(),
+        "error": None,
+    }]
+    resp = await client.get("/payment/stream/done_tx")
+    assert resp.status_code == 200
+    assert "COMPLETE" in resp.text

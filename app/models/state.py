@@ -11,3 +11,5 @@ LAST_ITL_OK_AT: float = 0.0
 ACTIVE_TX: Optional[dict[str, Any]] = None
 ACTIVE_TX_TASK: Optional[asyncio.Task] = None
 STATE_LOCK = asyncio.Lock()
+TX_HISTORY: list[dict[str, Any]] = []
+TX_HISTORY_MAX: int = 20

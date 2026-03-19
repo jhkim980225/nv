@@ -1,8 +1,11 @@
 """결제 라우터 — /payment/*"""
+import asyncio
+import json
 import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.models import state
 from app.models.schemas import PaymentStartRequest, PaymentStatusResponse
@@ -74,3 +77,61 @@ async def payment_cancel(tx_id: str) -> dict[str, Any]:
     if not cancelled:
         raise HTTPException(status_code=404, detail=f"취소할 거래 '{tx_id}'가 없습니다")
     return {"ok": True, "tx_id": tx_id, "status": "CANCELLED"}
+
+
+@router.get("/stream/{tx_id}")
+async def payment_stream(tx_id: str) -> StreamingResponse:
+    """
+    SSE 실시간 결제 상태 스트림.
+    거래 종료(COMPLETE/CANCELLED/TIMEOUT/ERROR) 시 자동 종료.
+    """
+    async def event_generator():
+        while True:
+            tx = state.ACTIVE_TX
+            if not tx or tx.get("tx_id") != tx_id:
+                # 이력에서 찾기
+                history_tx = next((t for t in state.TX_HISTORY if t.get("tx_id") == tx_id), None)
+                if history_tx:
+                    yield f"data: {json.dumps(_tx_payload(history_tx))}\n\n"
+                else:
+                    yield f"data: {json.dumps({'error': '거래를 찾을 수 없습니다'})}\n\n"
+                break
+
+            payload = _tx_payload(tx)
+            yield f"data: {json.dumps(payload)}\n\n"
+
+            if tx.get("status") != "ACTIVE":
+                break
+
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _tx_payload(tx: dict) -> dict[str, Any]:
+    total = tx["bill_amount"] + tx["coin_amount"]
+    return {
+        "tx_id": tx["tx_id"],
+        "status": tx["status"],
+        "target_amount": tx["target_amount"],
+        "bill_amount": tx["bill_amount"],
+        "coin_amount": tx["coin_amount"],
+        "total_amount": total,
+        "remaining_amount": max(0, tx["target_amount"] - total),
+        "change_amount": tx.get("change_amount", 0),
+        "change_result": tx.get("change_result"),
+        "error": tx.get("error"),
+    }
+
+
+@router.get("/history")
+async def payment_history() -> dict[str, Any]:
+    """최근 거래 이력 조회 (최대 20건, 최신순)."""
+    return {
+        "count": len(state.TX_HISTORY),
+        "history": list(reversed(state.TX_HISTORY)),
+    }
