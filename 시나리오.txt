@@ -26,10 +26,12 @@ POS -> GW: GET /payment/stream/abc123  ← SSE 구독
 
 NV -> ITL: STORED event (200페소)
 
-loop 200ms 폴링 (게이트웨이 내부)
+loop 200ms 폴링 (게이트웨이 내부, 두 장치 동시)
     GW -> ITL: GetDeviceStatus NV4000-COM4
-    ITL --> GW: [{eventTypeAsString:"STORED", value:200페소}]
-    note over GW: bill_amount = 200페소\ntotal(200) >= target(100) → COMPLETE\nchange = 100페소
+    GW -> ITL: GetDeviceStatus SMART_COIN_SYSTEM-COM3
+    ITL --> GW: NV4000 [{eventTypeAsString:"STORED", value:200페소}]
+    ITL --> GW: SMART Coin [{stateAsString:"IDLE"}]  ← 동전 투입 없음
+    note over GW: bill_amount = 200페소 / coin_amount = 0\ntotal(200) >= target(100) → COMPLETE\nchange = 100페소
 end
 
 == 4. 수납 차단 ==
@@ -64,9 +66,19 @@ participant "ITL REST API\n(:5000)" as ITL
 participant "NV4000\n(COM4)" as NV
 participant "SMART Coin\n(COM3)" as COIN
 
-== 1~4. 결제 시작 ~ 수납 완료 (동일) ==
+== 1~4. 결제 시작 ~ 수납 완료 ==
 
-note over POS, COIN: 장치 연결 → 결제 시작 → 200페소 투입\n→ COMPLETE, change=100페소
+note over POS, COIN: 장치 연결 → 결제 시작
+
+loop 200ms 폴링 (게이트웨이 내부, 두 장치 동시)
+    GW -> ITL: GetDeviceStatus NV4000-COM4
+    GW -> ITL: GetDeviceStatus SMART_COIN_SYSTEM-COM3
+    ITL --> GW: NV4000 [{eventTypeAsString:"STORED", value:200페소}]
+    ITL --> GW: SMART Coin [{stateAsString:"IDLE"}]
+    note over GW: bill_amount = 200페소 / coin_amount = 0\ntotal(200) >= target(100) → COMPLETE\nchange = 100페소
+end
+
+GW -> ITL: DisableAcceptor (NV4000 + SMART Coin)
 
 == 5. 동전 거스름돈 시도 → 실패 ==
 
