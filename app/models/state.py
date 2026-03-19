@@ -13,3 +13,5 @@ ACTIVE_TX_TASK: Optional[asyncio.Task] = None
 STATE_LOCK = asyncio.Lock()
 TX_HISTORY: list[dict[str, Any]] = []
 TX_HISTORY_MAX: int = 20
+ALERTS: list[dict[str, Any]] = []
+ALERTS_MAX: int = 100

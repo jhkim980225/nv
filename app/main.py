@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import state
 from app.services import itl_client
-from app.routers import device, payment
+from app.routers import device, payment, alerts
 
 
 @asynccontextmanager
@@ -37,6 +37,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 app.include_router(device.router)
 app.include_router(payment.router)
+app.include_router(alerts.router)
 
 
 # ── 헬스체크 ──────────────────────────────────────────────

@@ -16,6 +16,7 @@ async def reset_state():
     state.ACTIVE_TX = None
     state.ACTIVE_TX_TASK = None
     state.TX_HISTORY = []
+    state.ALERTS = []
     yield
     await state.HTTP.aclose()
     state.HTTP = None

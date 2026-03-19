@@ -191,12 +191,23 @@ async def _dispense_change(change: int) -> dict:
     try:
         await itl_client.enable_payout(state.NV_DEVICE_ID)
         result2 = await itl_client.dispense_value(state.NV_DEVICE_ID, change, config.NV4000_CURRENCY)
-        return {
+        final = {
             "result": "OK" if result2.get("dispenseResult") == "COMPLETED" else "ERROR",
             "amount": change, "device": "NV4000", "detail": result2, "coin_error": coin_error,
         }
     except Exception as e:
-        return {"result": "ERROR", "amount": change, "error": f"SMART_COIN: {coin_error}, NV4000: {e}"}
+        final = {"result": "ERROR", "amount": change, "error": f"SMART_COIN: {coin_error}, NV4000: {e}"}
+
+    if final["result"] == "ERROR":
+        from app.services import alert_service
+        await asyncio.gather(
+            alert_service.check_coin_inventory(change),
+            alert_service.check_nv4000_recycler_inventory(),
+            return_exceptions=True,
+        )
+        alert_service.alert_dispense_failed(change, coin_error, final.get("error", ""))
+
+    return final
 
 
 def _save_to_history(tx: dict) -> None:
