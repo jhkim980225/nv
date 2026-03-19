@@ -1,0 +1,219 @@
+@startuml  전체 결제 흐름
+
+title NV4000(지폐) + SMART Coin(동전) 통합 결제 게이트웨이\n전체 시나리오
+
+actor "POS / 프론트엔드" as POS
+participant "게이트웨이\n(FastAPI :8001)" as GW
+participant "ITL REST API\n(:5000)" as ITL
+participant "NV4000\n(COM4, SSP 0)" as NV
+participant "SMART Coin\n(COM3, SSP 16)" as COIN
+
+== 1. 장치 연결 (서버 시작 시 1회) ==
+
+POS -> GW: POST /device/connect
+activate GW
+GW -> ITL: POST /api/CashDevice/OpenConnection\n{comPort:COM4, sspAddress:0, setRoutes:[200→R1, 100→R2, 50→R3, 20→R4]}
+ITL -> NV: OpenConnection
+ITL --> GW: {deviceID:"NV4000-COM4", isOpen:true}
+GW -> ITL: POST /api/CashDevice/OpenConnection\n{comPort:COM3, sspAddress:16, enablePayout:true}
+ITL -> COIN: OpenConnection
+ITL --> GW: {deviceID:"SMART_COIN_SYSTEM-COM3", isOpen:true}
+GW --> POS: {nv4000:{ok:true, device_id:"NV4000-COM4"},\nsmart_coin:{ok:true, device_id:"SMART_COIN_SYSTEM-COM3"}}
+deactivate GW
+
+== 2. 결제 시작 ==
+
+POS -> GW: POST /payment/start\n{target_amount:10000, timeout_sec:120}
+activate GW
+note over GW: target=10000(100페소)\nbill_amount=0 / coin_amount=0
+GW -> ITL: POST /api/CashDevice/EnableAcceptor?deviceID=NV4000-COM4
+GW -> ITL: POST /api/CashDevice/EnableAcceptor?deviceID=SMART_COIN_SYSTEM-COM3
+GW -> ITL: POST /api/CashDevice/EnableCoinMechOrFeeder?deviceID=SMART_COIN_SYSTEM-COM3\nbody:true
+GW --> POS: {tx_id:"abc123", message:"지폐 또는 동전을 투입하세요"}
+deactivate GW
+
+== 3. 실시간 상태 구독 (SSE) ==
+
+POS -> GW: GET /payment/stream/abc123
+note over POS: SSE 연결 유지\n(EventSource)
+
+== 4. 폴링 루프 (게이트웨이 내부, 200ms) ==
+
+loop 200ms 간격
+    GW -> ITL: GET /api/CashDevice/GetDeviceStatus?deviceID=NV4000-COM4
+    ITL --> GW: [{type:"CashEventResponse", eventTypeAsString:"STORED", value:20000}]
+    note over GW: bill_amount += 20000\ntotal=20000 >= target=10000 → COMPLETE\nchange=10000(100페소)
+    GW -> ITL: GET /api/CashDevice/GetDeviceStatus?deviceID=SMART_COIN_SYSTEM-COM3
+    ITL --> GW: [{stateAsString:"IDLE"}]
+end
+
+== 5. 수납 완료 처리 (게이트웨이 자동) ==
+
+GW -> ITL: POST /api/CashDevice/DisableAcceptor?deviceID=NV4000-COM4
+GW -> ITL: POST /api/CashDevice/DisableAcceptor?deviceID=SMART_COIN_SYSTEM-COM3
+GW -> ITL: POST /api/CashDevice/EnableCoinMechOrFeeder?deviceID=SMART_COIN_SYSTEM-COM3\nbody:false
+
+GW --> POS: SSE data:{status:"COMPLETE", total_amount:20000,\nbill_amount:20000, change_amount:10000}
+
+== 6. 거스름돈 지급 (게이트웨이 자동) ==
+
+note over GW: SMART Coin 우선 시도
+
+GW -> ITL: POST /api/CashDevice/EnablePayout?deviceID=SMART_COIN_SYSTEM-COM3
+ITL --> GW: 200 OK
+GW -> ITL: POST /api/CashDevice/DispenseValue?deviceID=SMART_COIN_SYSTEM-COM3\n{Value:10000, CountryCode:"MXN"}
+ITL -> COIN: 동전 100페소 지급
+ITL --> GW: {dispenseResult:"COMPLETED"}
+GW --> POS: SSE data:{change_result:{result:"OK", device:"SMART_COIN", amount:10000}}
+
+== 7. 최종 결과 조회 ==
+
+POS -> GW: GET /payment/status/abc123
+GW --> POS: {status:"COMPLETE", bill_amount:20000,\ncoin_amount:0, change_amount:10000,\nchange_result:{result:"OK", device:"SMART_COIN"}}
+
+@enduml
+
+
+@startuml  혼합결제
+
+title 지폐 + 동전 혼합 수납 시나리오\n(100페소 지폐 + 30페소 동전 → 130페소 결제)
+
+actor "POS / 프론트엔드" as POS
+participant "게이트웨이\n(:8001)" as GW
+participant "ITL REST API\n(:5000)" as ITL
+participant "NV4000\n(COM4)" as NV
+participant "SMART Coin\n(COM3)" as COIN
+
+POS -> GW: POST /payment/start\n{target_amount:13000, timeout_sec:120}
+GW --> POS: {tx_id:"xyz789"}
+
+loop 200ms 폴링 (게이트웨이 내부)
+    GW -> ITL: GetDeviceStatus NV4000-COM4
+    ITL --> GW: [STORED value:10000]  ← 100페소 지폐
+    note over GW: bill_amount=10000\ntotal=10000 < 13000
+    GW -> ITL: GetDeviceStatus SMART_COIN_SYSTEM-COM3
+    ITL --> GW: [VALUE_ADDED value:500]  ← 5페소 동전
+    note over GW: coin_amount=500\ntotal=10500 < 13000
+    GW -> ITL: GetDeviceStatus (계속 폴링...)
+    ITL --> GW: [VALUE_ADDED value:1000, VALUE_ADDED value:1000, VALUE_ADDED value:500]  ← 10+10+5페소
+    note over GW: coin_amount=3000\ntotal=13000 >= 13000 → COMPLETE\nchange=0
+end
+
+GW -> ITL: DisableAcceptor (NV4000 + SMART Coin)
+note over GW: change=0 → 거스름돈 없음
+GW --> POS: SSE {status:"COMPLETE", bill_amount:10000,\ncoin_amount:3000, change_amount:0}
+
+@enduml
+
+
+@startuml  재고부족_알람
+
+title 거스름돈 지급 실패 → 알람 시나리오\n(동전 재고 없음 + NV4000 리사이클러 비어있음)
+
+actor "POS / 프론트엔드" as POS
+participant "게이트웨이\n(:8001)" as GW
+participant "ITL REST API\n(:5000)" as ITL
+participant "알람 스트림" as ALERT
+
+POS -> ALERT: GET /alerts/stream (SSE 구독)
+
+note over GW: 결제 COMPLETE, change=5000(50페소)
+
+GW -> ITL: EnablePayout SMART_COIN_SYSTEM-COM3
+GW -> ITL: DispenseValue {Value:5000}
+ITL --> GW: {dispenseResult:"NOT_ENOUGH_VALUE"}  ← 동전 재고 없음
+
+GW -> ITL: EnablePayout NV4000-COM4
+GW -> ITL: DispenseValue {Value:5000}
+ITL --> GW: {dispenseResult:"NOT_ENOUGH_VALUE"}  ← 리사이클러 비어있음
+
+note over GW: 양쪽 모두 실패\n→ 재고 점검 + 알람 생성
+
+GW -> ITL: GetAllLevels SMART_COIN_SYSTEM-COM3
+ITL --> GW: [{Value:500, StoredInPayout:0}, ...]  ← 동전 없음
+GW -> ITL: GetAllLevels NV4000-COM4
+ITL --> GW: [{Value:5000, AcceptRoute:"RECYCLER_3", StoredInPayout:0}]
+
+ALERT --> POS: SSE data:{type:"LOW_COIN", severity:"WARNING",\nmessage:"동전을 충전해야합니다 — 5페소 동전이 비어있습니다"}
+ALERT --> POS: SSE data:{type:"LOW_BILL_RECYCLER", severity:"WARNING",\nmessage:"3번 리사이클러에 50페소 지폐를 추가해야합니다"}
+ALERT --> POS: SSE data:{type:"DISPENSE_FAILED", severity:"ERROR",\nmessage:"거스름돈 50페소 지급 실패 — 동전과 지폐 모두 지급 불가"}
+
+POS -> GW: POST /alerts/{id}/ack  ← 알람 확인 처리
+
+note over POS: 운영자에게 알림 표시\n"동전/지폐 보충 필요"
+
+@enduml
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+게이트웨이 API 요약 (POS → 게이트웨이 :8001)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[장치 관리]
+Method  Endpoint                    설명
+------  --------------------------  ----------------------------------------
+POST    /device/connect             NV4000 + SMART Coin 순차 연결
+DELETE  /device/connect             두 장치 연결 해제
+GET     /device/status              연결 상태 조회
+GET     /device/monitor             실시간 상태 조회 (JAMMED/ERROR 감지)
+GET     /device/nv4000/levels       NV4000 리사이클러 재고 조회
+POST    /device/nv4000/levels       NV4000 리사이클러 재고 설정
+GET     /device/coin/levels         SMART Coin 동전 재고 조회
+POST    /device/nv4000/dispense     NV4000 수동 지폐 지급 (유지보수용)
+POST    /device/coin/dispense       SMART Coin 수동 동전 지급 (유지보수용)
+
+[결제]
+Method  Endpoint                    설명
+------  --------------------------  ----------------------------------------
+POST    /payment/start              결제 시작 (수락기 활성화 + 폴링 시작)
+GET     /payment/status/{tx_id}     결제 상태 조회 (1회성)
+GET     /payment/stream/{tx_id}     결제 상태 SSE 스트림 (실시간)
+GET     /payment/current            현재 진행 중인 거래 조회
+POST    /payment/cancel/{tx_id}     결제 취소
+GET     /payment/history            최근 거래 이력 (최대 20건)
+
+[알람]
+Method  Endpoint                    설명
+------  --------------------------  ----------------------------------------
+GET     /alerts/stream              알람 SSE 스트림 (실시간)
+GET     /alerts                     알람 목록 조회 (?unacked_only=true)
+POST    /alerts/check               수동 재고 점검 + 알람 생성
+POST    /alerts/{id}/ack            알람 확인 처리
+DELETE  /alerts                     확인된 알람 삭제
+
+[시스템]
+Method  Endpoint                    설명
+------  --------------------------  ----------------------------------------
+GET     /health                     헬스체크
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+핵심 이벤트 (GetDeviceStatus 응답)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+이벤트         장치          누적   의미
+-----------   -----------   ----   ------------------------------------
+STORED        NV4000        ✅     지폐 수납 확정 → bill_amount 합산
+STACKED       NV4000        ✅     지폐 스택 완료 → bill_amount 합산
+VALUE_ADDED   SMART Coin    ✅     동전 투입 → coin_amount 합산
+ESCROW        NV4000        ❌     지폐 대기 중 (확정 아님, 누적 안 함)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+거스름돈 지급 우선순위
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1순위: SMART Coin (동전) — EnablePayout → DispenseValue
+2순위: NV4000 (리사이클러 지폐) — EnablePayout → DispenseValue
+실패 시: LOW_COIN / LOW_BILL_RECYCLER / DISPENSE_FAILED 알람 자동 생성
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NV4000 리사이클러 라우팅 (현재 설정)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+리사이클러   권종    센타보
+---------   ------  ------
+1번         200페소  20000
+2번         100페소  10000
+3번          50페소   5000
+4번          20페소   2000
+캐시박스     500페소  50000 (지급 불가)
+캐시박스    1000페소 100000 (지급 불가)
